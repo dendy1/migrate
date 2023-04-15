@@ -8,7 +8,7 @@ import (
 	"log"
 	"testing"
 
-	_ "github.com/ClickHouse/clickhouse-go"
+	clk "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/dhui/dktest"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/clickhouse"
@@ -26,7 +26,7 @@ var (
 		PortRequired: true, ReadyFunc: isReady,
 	}
 	specs = []dktesting.ContainerSpec{
-		{ImageName: "yandex/clickhouse-server:21.3", Options: opts},
+		{ImageName: "clickhouse/clickhouse-server:22.8", Options: opts},
 	}
 )
 
@@ -113,12 +113,16 @@ func testSimpleWithInstanceDefaultConfigValues(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		addr := clickhouseConnectionString(ip, port, "")
-		conn, err := sql.Open("clickhouse", addr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		d, err := clickhouse.WithInstance(conn, &clickhouse.Config{})
+		conn, err := clk.Open(&clk.Options{
+			Addr: []string{fmt.Sprintf("%s:%s", ip, port)},
+			Auth: clk.Auth{
+				Database: "db",
+				Username: "user",
+				Password: "password",
+			},
+		})
+
+		d, err := clickhouse.WithInstance(context.Background(), conn, &clickhouse.Config{})
 		if err != nil {
 			_ = conn.Close()
 			t.Fatal(err)

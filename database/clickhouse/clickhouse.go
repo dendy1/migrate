@@ -1,8 +1,11 @@
 package clickhouse
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"io"
 	"net/url"
 	"strconv"
@@ -40,16 +43,17 @@ func init() {
 	database.Register("clickhouse", &ClickHouse{})
 }
 
-func WithInstance(conn *sql.DB, config *Config) (database.Driver, error) {
+func WithInstance(ctx context.Context, conn driver.Conn, config *Config) (database.Driver, error) {
 	if config == nil {
 		return nil, ErrNilConfig
 	}
 
-	if err := conn.Ping(); err != nil {
+	if err := conn.Ping(ctx); err != nil {
 		return nil, err
 	}
 
 	ch := &ClickHouse{
+		ctx:    context.Background(),
 		conn:   conn,
 		config: config,
 	}
@@ -62,7 +66,8 @@ func WithInstance(conn *sql.DB, config *Config) (database.Driver, error) {
 }
 
 type ClickHouse struct {
-	conn     *sql.DB
+	ctx      context.Context
+	conn     driver.Conn
 	config   *Config
 	isLocked atomic.Bool
 }
@@ -74,10 +79,15 @@ func (ch *ClickHouse) Open(dsn string) (database.Driver, error) {
 	}
 	q := migrate.FilterCustomQuery(purl)
 	q.Scheme = "tcp"
-	conn, err := sql.Open("clickhouse", q.String())
-	if err != nil {
-		return nil, err
-	}
+
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{purl.Host},
+		Auth: clickhouse.Auth{
+			Database: purl.Query().Get("database"),
+			Username: purl.Query().Get("username"),
+			Password: purl.Query().Get("password"),
+		},
+	})
 
 	multiStatementMaxSize := DefaultMultiStatementMaxSize
 	if s := purl.Query().Get("x-multi-statement-max-size"); len(s) > 0 {
@@ -93,6 +103,7 @@ func (ch *ClickHouse) Open(dsn string) (database.Driver, error) {
 	}
 
 	ch = &ClickHouse{
+		ctx:  context.Background(),
 		conn: conn,
 		config: &Config{
 			MigrationsTable:       purl.Query().Get("x-migrations-table"),
@@ -113,7 +124,7 @@ func (ch *ClickHouse) Open(dsn string) (database.Driver, error) {
 
 func (ch *ClickHouse) init() error {
 	if len(ch.config.DatabaseName) == 0 {
-		if err := ch.conn.QueryRow("SELECT currentDatabase()").Scan(&ch.config.DatabaseName); err != nil {
+		if err := ch.conn.QueryRow(ch.ctx, "SELECT currentDatabase()").Scan(&ch.config.DatabaseName); err != nil {
 			return err
 		}
 	}
@@ -141,7 +152,7 @@ func (ch *ClickHouse) Run(r io.Reader) error {
 			if tq == "" {
 				return true
 			}
-			if _, e := ch.conn.Exec(string(m)); e != nil {
+			if e := ch.conn.Exec(ch.ctx, string(m)); e != nil {
 				err = database.Error{OrigErr: e, Err: "migration failed", Query: m}
 				return false
 			}
@@ -157,7 +168,7 @@ func (ch *ClickHouse) Run(r io.Reader) error {
 		return err
 	}
 
-	if _, err := ch.conn.Exec(string(migration)); err != nil {
+	if err := ch.conn.Exec(ch.ctx, string(migration)); err != nil {
 		return database.Error{OrigErr: err, Err: "migration failed", Query: migration}
 	}
 
@@ -165,39 +176,25 @@ func (ch *ClickHouse) Run(r io.Reader) error {
 }
 func (ch *ClickHouse) Version() (int, bool, error) {
 	var (
-		version int
+		version int64
 		dirty   uint8
 		query   = "SELECT version, dirty FROM `" + ch.config.MigrationsTable + "` ORDER BY sequence DESC LIMIT 1"
 	)
-	if err := ch.conn.QueryRow(query).Scan(&version, &dirty); err != nil {
+	if err := ch.conn.QueryRow(ch.ctx, query).Scan(&version, &dirty); err != nil {
 		if err == sql.ErrNoRows {
 			return database.NilVersion, false, nil
 		}
 		return 0, false, &database.Error{OrigErr: err, Query: []byte(query)}
 	}
-	return version, dirty == 1, nil
+	return int(version), dirty == 1, nil
 }
 
 func (ch *ClickHouse) SetVersion(version int, dirty bool) error {
-	var (
-		bool = func(v bool) uint8 {
-			if v {
-				return 1
-			}
-			return 0
-		}
-		tx, err = ch.conn.Begin()
-	)
-	if err != nil {
-		return err
-	}
-
 	query := "INSERT INTO " + ch.config.MigrationsTable + " (version, dirty, sequence) VALUES (?, ?, ?)"
-	if _, err := tx.Exec(query, version, bool(dirty), time.Now().UnixNano()); err != nil {
+	if err := ch.conn.Exec(ch.ctx, query, version, dirty, time.Now().UnixNano()); err != nil {
 		return &database.Error{OrigErr: err, Query: []byte(query)}
 	}
-
-	return tx.Commit()
+	return nil
 }
 
 // ensureVersionTable checks if versions table exists and, if not, creates it.
@@ -223,7 +220,7 @@ func (ch *ClickHouse) ensureVersionTable() (err error) {
 		query = "SHOW TABLES FROM " + ch.config.DatabaseName + " LIKE '" + ch.config.MigrationsTable + "'"
 	)
 	// check if migration table exists
-	if err := ch.conn.QueryRow(query).Scan(&table); err != nil {
+	if err := ch.conn.QueryRow(ch.ctx, query).Scan(&table); err != nil {
 		if err != sql.ErrNoRows {
 			return &database.Error{OrigErr: err, Query: []byte(query)}
 		}
@@ -252,7 +249,7 @@ func (ch *ClickHouse) ensureVersionTable() (err error) {
 		query = fmt.Sprintf(`%s ORDER BY sequence`, query)
 	}
 
-	if _, err := ch.conn.Exec(query); err != nil {
+	if err := ch.conn.Exec(ch.ctx, query); err != nil {
 		return &database.Error{OrigErr: err, Query: []byte(query)}
 	}
 	return nil
@@ -260,7 +257,7 @@ func (ch *ClickHouse) ensureVersionTable() (err error) {
 
 func (ch *ClickHouse) Drop() (err error) {
 	query := "SHOW TABLES FROM " + ch.config.DatabaseName
-	tables, err := ch.conn.Query(query)
+	tables, err := ch.conn.Query(ch.ctx, query)
 
 	if err != nil {
 		return &database.Error{OrigErr: err, Query: []byte(query)}
@@ -279,7 +276,7 @@ func (ch *ClickHouse) Drop() (err error) {
 
 		query = "DROP TABLE IF EXISTS " + ch.config.DatabaseName + "." + table
 
-		if _, err := ch.conn.Exec(query); err != nil {
+		if err := ch.conn.Exec(ch.ctx, query); err != nil {
 			return &database.Error{OrigErr: err, Query: []byte(query)}
 		}
 	}
