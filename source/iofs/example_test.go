@@ -7,9 +7,9 @@ import (
 	"embed"
 	"log"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/dendy1/migrate/v4"
+	_ "github.com/dendy1/migrate/v4/database/postgres"
+	"github.com/dendy1/migrate/v4/source/iofs"
 )
 
 //go:embed testdata/migrations/*.sql

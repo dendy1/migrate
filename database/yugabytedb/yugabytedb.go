@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database"
+	"github.com/dendy1/migrate/v4"
+	"github.com/dendy1/migrate/v4/database"
 	"github.com/hashicorp/go-multierror"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgerrcode"

@@ -5,5 +5,5 @@ package cli
 
 import (
 	_ "github.com/ClickHouse/clickhouse-go/v2"
-	_ "github.com/golang-migrate/migrate/v4/database/clickhouse"
+	_ "github.com/dendy1/migrate/v4/database/clickhouse"
 )

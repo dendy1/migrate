@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/golang-migrate/migrate/v4/source"
+	"github.com/dendy1/migrate/v4/source"
 )
 
 func init() {
